@@ -19,6 +19,8 @@ Imposta la tua API key di Anthropic:
 export ANTHROPIC_API_KEY="la-tua-api-key"
 ```
 
+Con **docker compose**: passa la variabile d'ambiente nel container via `env_file`
+
 ## Utilizzo
 
 ### Esempio Base
