@@ -23,7 +23,67 @@ Con **docker compose**: passa la variabile d'ambiente nel container via `env_fil
 
 ## Utilizzo
 
-### Esempio Base
+### 1. Come Web API (Consigliato per Docker)
+
+Avvia il servizio con Docker Compose:
+
+```bash
+docker compose up
+```
+
+L'API sarà disponibile su `http://localhost:5000`
+
+#### Endpoint Disponibili
+
+**Health Check**
+```bash
+curl http://localhost:5000/health
+```
+Risposta:
+```json
+{"status":"ok","service":"RAG Q&A API"}
+```
+
+**Informazioni Documento**
+```bash
+curl http://localhost:5000/api/document-info
+```
+Risposta:
+```json
+{
+  "document_loaded": true,
+  "document_length": 1007,
+  "document_path": "./documento_esempio.pdf"
+}
+```
+
+**Generare Coppie Q&A**
+```bash
+curl -X POST "http://localhost:5000/api/generate-qa?questions=5"
+```
+
+Parametri:
+- `questions`: Numero di coppie Q&A da generare (1-20, default: 5)
+
+Risposta:
+```json
+{
+  "success": true,
+  "count": 2,
+  "qa_pairs": [
+    {
+      "question": "Quando è stato coniato il termine \"intelligenza artificiale\"?",
+      "answer": "Il termine è stato coniato nel 1956 durante la conferenza di Dartmouth..."
+    },
+    {
+      "question": "Che cos'è il machine learning?",
+      "answer": "Il machine learning è un sottocampo dell'IA che permette ai computer di apprendere..."
+    }
+  ]
+}
+```
+
+### 2. Utilizzo da Linea di Comando
 
 ```bash
 python simple_rag_qa.py
@@ -34,7 +94,7 @@ Questo comando:
 - Estrae il testo dal PDF
 - Genera 5 coppie di domande e risposte
 
-### Utilizzo Personalizzato
+### 3. Utilizzo Personalizzato (Programmazione)
 
 ```python
 from simple_rag_qa import SimpleRAG
@@ -73,9 +133,36 @@ Q2: Quando è stato coniato il termine "intelligenza artificiale"?
 A2: Il termine è stato coniato nel 1956 durante la conferenza di Dartmouth.
 ```
 
+## Docker
+
+### Avviare il Servizio
+
+**Modo interattivo** (vedi i log):
+```bash
+docker compose up
+```
+
+**Modo detached** (esegui in background):
+```bash
+docker compose up -d
+```
+
+### Visualizzare i Log
+
+```bash
+docker compose logs -f
+```
+
+### Fermare il Servizio
+
+```bash
+docker compose down
+```
+
 ## Note
 
 - Il sistema utilizza Claude Sonnet 4 per la generazione di Q&A
 - Il testo estratto viene limitato a ~8000 caratteri per rispettare i limiti del contesto
 - Per PDF più lunghi, considera di implementare la chunking del testo
+- La Web API rimane in ascolto e pronta a servire richieste indefinitamente
 
