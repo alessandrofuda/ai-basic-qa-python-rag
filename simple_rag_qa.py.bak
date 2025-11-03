@@ -1,0 +1,404 @@
+"""
+Simple RAG System - PDF to Q&A Generator
+Estrae testo da un PDF e genera domande e risposte utilizzando un LLM
+"""
+
+import os
+import time
+from pathlib import Path
+import PyPDF2
+from anthropic import Anthropic
+
+class SimpleRAG:
+    def __init__(self, api_key=None, timeout=60, max_retries=3):
+        """Inizializza il sistema RAG con l'API key di Anthropic"""
+        self.client = Anthropic(
+            api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
+            timeout=timeout,
+            max_retries=max_retries
+        )
+        self.document_text = ""
+        self.api_call_delay = 0.5  # Delay between API calls in seconds (rate limiting)
+    
+    def extract_text_from_pdf(self, pdf_path):
+        """Estrae il testo da un file PDF"""
+        print(f"📄 Estrazione testo da {pdf_path}...")
+        
+        with open(pdf_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            text = ""
+            
+            for page_num, page in enumerate(pdf_reader.pages):
+                text += f"\n--- Pagina {page_num + 1} ---\n"
+                text += page.extract_text()
+        
+        self.document_text = text
+        print(f"✅ Estratto {len(text)} caratteri da {len(pdf_reader.pages)} pagine")
+        return text
+    
+    def generate_qa_pairs(self, num_questions=5):
+        """Genera coppie domanda-risposta dal documento"""
+        if not self.document_text:
+            raise ValueError("Nessun documento caricato. Usa extract_text_from_pdf() prima.")
+        
+        print(f"\n🤖 Generazione di {num_questions} coppie Q&A...")
+        
+        prompt = f"""Analizza il seguente documento e genera {num_questions} coppie di domande e risposte.
+
+            Le domande devono essere pertinenti e coprire i concetti chiave del documento.
+            Le risposte devono essere accurate e basate esclusivamente sul contenuto del documento.
+
+            Formatta l'output come:
+
+            Q1: [domanda]
+            A1: [risposta]
+
+            Q2: [domanda]
+            A2: [risposta]
+
+            Documento:
+            {self.document_text[:8000]}
+        """
+        
+        try:
+            message = self.client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,  # tokens massimi generabili nella RISPOSTA, massimo 2000
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+
+            qa_text = message.content[0].text
+            print("✅ Q&A generate con successo!\n")
+
+            return self._parse_qa_pairs(qa_text)
+        finally:
+            # Add delay between API calls to prevent rate limiting
+            time.sleep(self.api_call_delay)
+    
+    def _parse_qa_pairs(self, qa_text):
+        """Parsing delle coppie Q&A dal testo generato"""
+        qa_pairs = []
+        lines = qa_text.strip().split('\n')
+
+        current_q = None
+        current_a = None
+
+        for line in lines:
+            line = line.strip()
+            if line.startswith('Q') and ':' in line:
+                if current_q and current_a:
+                    qa_pairs.append({"question": current_q, "answer": current_a})
+                current_q = line.split(':', 1)[1].strip()
+                current_a = None
+            elif line.startswith('A') and ':' in line:
+                current_a = line.split(':', 1)[1].strip()
+
+        if current_q and current_a:
+            qa_pairs.append({"question": current_q, "answer": current_a})
+
+        return qa_pairs
+
+    def chunk_text(self, text, max_chars=8000, overlap=200, max_chunks=100):
+        """Divide il testo in chunk intelligenti mantenendo i confini delle frasi
+
+        Args:
+            text: Text to chunk
+            max_chars: Maximum characters per chunk
+            overlap: Overlap characters between chunks
+            max_chunks: Maximum number of chunks to prevent runaway processing
+        """
+        chunks = []
+        start = 0
+
+        while start < len(text) and len(chunks) < max_chunks:
+            # Calcola la fine del chunk
+            end = min(start + max_chars, len(text))
+
+            # Se non siamo alla fine del documento, cerca l'ultimo punto
+            if end < len(text):
+                last_period = text.rfind('.', start, end)
+                if last_period > start:
+                    end = last_period + 1
+
+            # Estrai il chunk
+            chunk = text[start:end].strip()
+            if chunk:  # Aggiungi solo se non vuoto
+                chunks.append(chunk)
+
+            # Se siamo alla fine del documento, interrompi il ciclo
+            if end >= len(text):
+                break
+
+            # Sposta l'inizio per il prossimo chunk con overlap
+            # Assicurati che avanziamo sempre (almeno 1 carattere)
+            start = max(end - overlap, start + 1)
+
+        if len(chunks) >= max_chunks:
+            print(f"⚠️  Raggiunto il limite massimo di {max_chunks} chunk")
+
+        return chunks
+
+    def generate_qa_pairs_chunked(self, num_questions=3, chunk_size=8000, overlap=200):
+        """Genera coppie Q&A per documenti lunghi processando per chunk
+
+        Args:
+            num_questions: Number of Q&A pairs per chunk
+            chunk_size: Characters per chunk
+            overlap: Overlap between chunks
+
+        Returns:
+            List of Q&A pairs from all chunks
+        """
+        if not self.document_text:
+            raise ValueError("Nessun documento caricato. Usa extract_text_from_pdf() prima.")
+
+        # Dividi il documento in chunk
+        chunks = self.chunk_text(self.document_text, max_chars=chunk_size, overlap=overlap)
+        print(f"\n📚 Documento diviso in {len(chunks)} chunk (dimensione chunk: {chunk_size} caratteri, overlap: {overlap})")
+
+        all_qa = []
+        errors = []
+
+        # Processa ogni chunk
+        for i, chunk in enumerate(chunks):
+            print(f"\n🔄 Processamento chunk {i+1}/{len(chunks)}... ({len(chunk)} caratteri)")
+
+            # Salva il testo originale e sostituiscilo con il chunk
+            original_text = self.document_text
+            self.document_text = chunk
+
+            max_retries = 2
+            retry_count = 0
+
+            while retry_count <= max_retries:
+                try:
+                    qa = self.generate_qa_pairs(num_questions=num_questions)
+                    all_qa.extend(qa)
+                    print(f"   ✓ Generati {len(qa)} Q&A dal chunk {i+1}")
+                    break  # Success, exit retry loop
+
+                except Exception as e:
+                    retry_count += 1
+                    error_msg = f"Errore nel chunk {i+1} (tentativo {retry_count}/{max_retries + 1}): {str(e)}"
+                    print(f"⚠️  {error_msg}")
+
+                    if retry_count > max_retries:
+                        errors.append(error_msg)
+                    else:
+                        # Wait before retrying
+                        wait_time = min(2 ** retry_count, 10)  # Exponential backoff
+                        print(f"   ⏳ Attesa {wait_time}s prima di ritentare...")
+                        time.sleep(wait_time)
+                finally:
+                    # Ripristina il testo originale
+                    self.document_text = original_text
+
+        if errors:
+            print(f"\n⚠️  Alcuni chunk hanno prodotto errori ({len(errors)}/{len(chunks)})")
+
+        print(f"\n✅ Generato un totale di {len(all_qa)} coppie Q&A da {len(chunks)} chunk")
+        return all_qa
+    
+    def print_qa_pairs(self, qa_pairs):
+        """Stampa le coppie Q&A in formato leggibile"""
+        print("=" * 80)
+        print("DOMANDE E RISPOSTE GENERATE")
+        print("=" * 80)
+        
+        for i, qa in enumerate(qa_pairs, 1):
+            print(f"\n{'='*80}")
+            print(f"Q{i}: {qa['question']}")
+            print(f"\nA{i}: {qa['answer']}")
+        
+        print(f"\n{'='*80}")
+
+
+def create_example_pdf(pdf_path):
+    """Crea un documento PDF di esempio"""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    if os.path.exists(pdf_path):
+        return
+
+    print("📝 Creazione documento PDF di esempio...")
+    c = canvas.Canvas(pdf_path, pagesize=letter)
+    c.setFont("Helvetica", 12)
+
+    text = """
+    L'Intelligenza Artificiale: Una Panoramica
+
+    L'intelligenza artificiale (IA) è un campo dell'informatica che si concentra
+    sulla creazione di sistemi capaci di eseguire compiti che normalmente richiedono
+    l'intelligenza umana.
+
+    Storia dell'IA
+    Il termine "intelligenza artificiale" è stato coniato nel 1956 durante la
+    conferenza di Dartmouth. Da allora, il campo ha attraversato diversi periodi
+    di entusiasmo e di "inverni dell'IA".
+
+    Applicazioni Moderne
+    Oggi l'IA viene utilizzata in molti settori:
+    - Assistenti vocali come Siri e Alexa
+    - Sistemi di raccomandazione su Netflix e Amazon
+    - Veicoli autonomi
+    - Diagnosi medica assistita
+    - Traduzione automatica
+
+    Machine Learning
+    Il machine learning è un sottocampo dell'IA che permette ai computer di
+    apprendere dai dati senza essere esplicitamente programmati. Include tecniche
+    come le reti neurali e il deep learning.
+
+    Sfide Etiche
+    L'IA solleva importanti questioni etiche riguardo la privacy, i bias algoritmici
+    e l'impatto sul mercato del lavoro.
+    """
+
+    y = 750
+    for line in text.split('\n'):
+        c.drawString(50, y, line.strip())
+        y -= 15
+        if y < 50:
+            c.showPage()
+            y = 750
+
+    c.save()
+    print(f"✅ Documento creato: {pdf_path}\n")
+
+
+# Flask App Setup
+from flask import Flask, jsonify, request
+from werkzeug.exceptions import RequestTimeout
+
+app = Flask(__name__)
+
+# Configure request timeouts (in seconds)
+app.config['REQUEST_TIMEOUT'] = 300  # 5 minutes for chunked processing
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 300
+
+# Global RAG instance
+rag_instance = None
+example_pdf = "./documento_esempio.pdf"
+
+
+def init_rag():
+    """Inizializza il sistema RAG"""
+    global rag_instance
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("⚠️  ATTENZIONE: API key non configurata!")
+        return False
+
+    create_example_pdf(example_pdf)
+    rag_instance = SimpleRAG()
+    rag_instance.extract_text_from_pdf(example_pdf)
+    return True
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({"status": "ok", "service": "RAG Q&A API"}), 200
+
+
+@app.route('/api/generate-qa', methods=['POST'])
+def generate_qa():
+    """Genera coppie Q&A dal documento caricato"""
+    try:
+        if rag_instance is None:
+            return jsonify({"error": "RAG system not initialized"}), 500
+
+        num_questions = request.args.get('questions', 5, type=int)
+
+        if num_questions < 1 or num_questions > 20:
+            return jsonify({"error": "questions parameter must be between 1 and 20"}), 400
+
+        qa_pairs = rag_instance.generate_qa_pairs(num_questions=num_questions)
+
+        return jsonify({
+            "success": True,
+            "count": len(qa_pairs),
+            "qa_pairs": qa_pairs
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/generate-qa-chunked', methods=['POST'])
+def generate_qa_chunked():
+    """Genera coppie Q&A per documenti lunghi processando per chunk"""
+    try:
+        if rag_instance is None:
+            return jsonify({"error": "RAG system not initialized"}), 500
+
+        num_questions = request.args.get('questions_per_chunk', 3, type=int)
+        chunk_size = request.args.get('chunk_size', 8000, type=int)
+        overlap = request.args.get('overlap', 200, type=int)
+
+        # Validate parameters
+        if num_questions < 1 or num_questions > 20:
+            return jsonify({"error": "questions_per_chunk must be between 1 and 20"}), 400
+
+        if chunk_size < 1000 or chunk_size > 16000:
+            return jsonify({"error": "chunk_size must be between 1000 and 16000"}), 400
+
+        if overlap < 0 or overlap >= chunk_size:
+            return jsonify({"error": "overlap must be between 0 and chunk_size-1"}), 400
+
+        print(f"\n📊 Inizio elaborazione chunked: questions={num_questions}, chunk_size={chunk_size}, overlap={overlap}")
+
+        qa_pairs = rag_instance.generate_qa_pairs_chunked(
+            num_questions=num_questions,
+            chunk_size=chunk_size,
+            overlap=overlap
+        )
+
+        print(f"✅ Elaborazione completata: {len(qa_pairs)} Q&A generate")
+
+        return jsonify({
+            "success": True,
+            "count": len(qa_pairs),
+            "qa_pairs": qa_pairs
+        }), 200
+
+    except TimeoutError as e:
+        print(f"⏱️  TimeoutError: {str(e)}")
+        return jsonify({"error": f"Request timeout: {str(e)}"}), 504
+    except Exception as e:
+        print(f"❌ Exception in generate_qa_chunked: {type(e).__name__}: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/document-info', methods=['GET'])
+def document_info():
+    """Ritorna info sul documento caricato"""
+    if rag_instance is None:
+        return jsonify({"error": "RAG system not initialized"}), 500
+
+    return jsonify({
+        "document_loaded": bool(rag_instance.document_text),
+        "document_length": len(rag_instance.document_text),
+        "document_path": example_pdf
+    }), 200
+
+
+if __name__ == "__main__":
+    print("🚀 Avvio del server RAG Q&A API...")
+    if init_rag():
+        print("✅ Sistema RAG inizializzato correttamente")
+        print("📡 Server in ascolto su http://0.0.0.0:5000")
+        # Run Flask app with proper settings
+        app.run(
+            host='0.0.0.0',
+            port=5000,
+            debug=False,
+            threaded=True
+        )
+    else:
+        print("❌ Errore nell'inizializzazione del sistema RAG")
+        exit(1)
+

@@ -11,6 +11,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia il codice dell'applicazione nella directory di lavoro
 COPY . .
 
-# Comando per eseguire l'applicazione (es. avviare un'app Flask)
-# CMD ["python", "app.py"]
-CMD ["python", "simple_rag_qa.py"]
+# Run the Flask application
+CMD ["python", "app.py"]
