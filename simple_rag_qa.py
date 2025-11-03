@@ -119,7 +119,7 @@ def main():
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
     
-    example_pdf = "/home/claude/documento_esempio.pdf"
+    example_pdf = "./documento_esempio.pdf"
     
     if not os.path.exists(example_pdf):
         print("📝 Creazione documento PDF di esempio...")
