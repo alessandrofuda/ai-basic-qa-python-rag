@@ -1,0 +1,12 @@
+# version: '3.8'
+
+services:
+  web:
+    build: . # Costruisce l'immagine dal Dockerfile nella directory corrente
+    ports:
+      - "5000:5000" # Collega la porta 5000 del container alla porta 5000 del tuo host
+    volumes:
+      - .:/app # Monta il codice sorgente in modo che le modifiche siano visibili al volo
+    env_file:
+      - .env
+
